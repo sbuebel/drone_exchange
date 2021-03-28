@@ -2,9 +2,19 @@ import cv2
 import apriltag
 import time
 import math
+import threading
+import sys
 
 from picamera import PiCamera
 from picamera.array import PiRGBArray
+
+from pymavlink import mavutil
+
+# connect to the mavlink to get pitch and roll
+# gonna have to send velocity commands too
+master = mavutil.mavlink_connection('/dev/ttyACM0', baud=115200)
+master.wait_heartbeat()
+master.mav.request_data_stream_send(1, 30, mavutil.mavlink.MAV_DATA_STREAM_RAW_CONTROLLER, 30, 1)
 
 # meters
 TAG_SIZE = 0.1476
@@ -12,16 +22,24 @@ MIDPOINT = (320, 240) # center of the image
 FOV_H = 62.2 # degrees, horizontal
 FOV_V = 48.8 # degrees, vertical
 
+roll = 0.0
+pitch = 0.0
+
 def distance(a, b):
 	inner = (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1])
 	return math.sqrt(inner)
 
-if __name__ == "__main__":
-
-	roll = 10.0
-	pitch = 0.0
-
+def update_state():
+	global roll, pitch
 	
+	while True:
+		msg = master.recv_match(blocking=True)
+		if msg.get_type() == 'ATTITUDE':
+			roll = msg.to_dict()['roll']*180/3.1415
+			pitch = msg.to_dict()['pitch']*180/3.1415
+			print(msg.to_dict())
+
+def localize():
 	# configure and start camera stream
 	cam = PiCamera()
 	cam.resolution = (640, 480)
@@ -34,7 +52,7 @@ if __name__ == "__main__":
 	detector = apriltag.Detector(opts)
 
 	for frame in cam.capture_continuous(raw, format="bgr", use_video_port=True):
-		
+
 		# get image and show as grayscale
 		im = frame.array
 		
@@ -98,4 +116,11 @@ if __name__ == "__main__":
 		
 		# allow clean way to break out of the loop
 		if key == ord("q"):
-			break
+			sys.exit(0)
+
+if __name__ == "__main__":
+	mav = threading.Thread(target=update_state)
+	mav.start()
+	
+	apr = threading.Thread(target=localize)
+	apr.start()
