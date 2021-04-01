@@ -31,6 +31,7 @@ roll = 0.0
 pitch = 0.0
 vx = 0.0
 vy = 0.0
+vz = 0.0
 
 def distance(a, b):
 	inner = (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1])
@@ -51,11 +52,13 @@ def update_state():
 			print(msg.to_dict())
 
 def send_pid_velocities():
-	global vx, vy
+	global vx, vy, vz
+	
+	# basically just continually write the desired velocity
 		
 
 def localize():
-	global vx, vy
+	global vx, vy, vz
 	
 	# configure and start camera stream
 	cam = PiCamera()
@@ -69,10 +72,10 @@ def localize():
 	detector = apriltag.Detector(opts)
 	
 	# for D term of PID
-	last_dx = 0.0
 	last_dy = 0.0
-	pid_i_term_x = 0.0
+	last_dz = 0.0
 	pid_i_term_y = 0.0
+	pid_i_term_z = 0.0
 
 	for frame in cam.capture_continuous(raw, format="bgr", use_video_port=True):
 
@@ -100,51 +103,49 @@ def localize():
 			# we can map this to a distance in real life
 			total_pix_dist = 0.25*(distance(pa, pb) + distance(pb, pc) + distance(pc, pd) + distance(pa, pd))
 			box_angle_taken = FOV_H*(total_pix_dist / 640)
-			dist = TAG_SIZE*0.5 / math.tan(3.1415/180 * box_angle_taken)
+			dx = TAG_SIZE*0.5 / math.tan(3.1415/180 * box_angle_taken)
 			
 			# now calculate relative position
-			dy_pixels = r.center[1] - MIDPOINT[1]
-			dx_pixels = r.center[0] - MIDPOINT[0]
+			dz_pixels = r.center[1] - MIDPOINT[1]
+			dy_pixels = r.center[0] - MIDPOINT[0]
 			
-			dy_angle = -1*(FOV_V * dy_pixels / 480) + pitch
-			dx_angle = FOV_H * dx_pixels / 640
+			dz_angle = -1*(FOV_V * dz_pixels / 480) + pitch
+			dy_angle = FOV_H * dy_pixels / 640
 			
-			dy = dist*math.tan(dy_angle * 3.1415/180) - SETPOINT[1]
-			dx = dist*math.tan(dx_angle * 3.1415/180) - SETPOINT[0]
+			dz = dx*math.tan(dz_angle * 3.1415/180) - SETPOINT[1]
+			dy = dx*math.tan(dy_angle * 3.1415/180) - SETPOINT[0]
 			
 			# now, compute PID velocities
-			pid_p_term_x = __P__*dx
 			pid_p_term_y = __P__*dy
+			pid_p_term_z = __P__*dz
 						
-			pid_i_term_x += __I__*pid_p_term_x
 			pid_i_term_y += __I__*pid_p_term_y
+			pid_i_term_z += __I__*pid_p_term_z
 			
-			pid_d_term_x = __D__*(dx - last_dx)
 			pid_d_term_y = __D__*(dy - last_dy)
+			pid_d_term_z = __D__*(dz - last_dz)
 		
-			# now we can compute the desired velocity - display on screen
-			vx = pid_p_term_x + pid_i_term_x + pid_d_term_x
-			vy = pid_p_term_y + pid_i_term_y + pid_d_term_y
-			
-			last_dx = dx
 			last_dy = dy
+			last_dz = dz
+			
+			# finally, we can compute the desired velocity - display on screen
+			vy = pid_p_term_y + pid_i_term_y + pid_d_term_y
+			vz = pid_p_term_z + pid_i_term_z + pid_d_term_z
+			
 		
 			# annotations
 			cv2.putText(im, "Pitch: "+str(pitch), (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 			cv2.putText(im, "Roll: "+str(roll), (15, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-			
-			cv2.putText(im, "Dist: "+str(dist), (15, 69), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-			cv2.putText(im, "dx: "+str(dx), (15, 91), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-			cv2.putText(im, "dy: "+str(dy), (15, 113), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+			cv2.putText(im, "dx: "+str(dx), (15, 69), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+			cv2.putText(im, "dy: "+str(dy), (15, 91), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+			cv2.putText(im, "dz: "+str(dz), (15, 113), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 		
 			# minus on y axis bc visualization is backwards (pixels go down...)
-			cv2.arrowedLine(im, MIDPOINT, (int(MIDPOINT[0] + 150*vx), int(MIDPOINT[1] - 150*vy)), (0, 255, 255), 2)
-
+			cv2.arrowedLine(im, MIDPOINT, (int(MIDPOINT[0] + 150*vy), int(MIDPOINT[1] - 150*vz)), (0, 255, 255), 2)
 			cv2.line(im, pa, pb, (0, 255, 0), 2)
 			cv2.line(im, pb, pc, (0, 255, 0), 2)
 			cv2.line(im, pc, pd, (0, 255, 0), 2)
 			cv2.line(im, pd, pa, (0, 255, 0), 2)
-			
 			cv2.circle(im, (int(r.center[0]), int(r.center[1])), 5, (0, 0, 255), -1)
 		
 		
@@ -166,3 +167,6 @@ if __name__ == "__main__":
 	
 	apr = threading.Thread(target=localize)
 	apr.start()
+	
+	vel = threading.Thread(target=send_pid_velocities)
+	vel.start()
