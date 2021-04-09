@@ -1,3 +1,17 @@
+'''
+Autonomous Drone Exchange 2021
+Spencer Buebel, Fran Romano
+
+Author: stbuebel@gmail.com
+Date: 4/2021
+
+This script reads images from the Rasp Pi camera,
+locates an apriltag, performing localization based
+on its position, and commands the velocity of the
+connected pixhawk flight controller to navigate to
+the tag.
+'''
+
 import cv2
 import apriltag
 import time
@@ -29,14 +43,24 @@ SETPOINT = (0, 0) # relative position navigation goal (from apriltag)
 # these are global - shared between threads
 roll = 0.0
 pitch = 0.0
+
+# global velocity command that we send
 vx = 0.0
 vy = 0.0
 vz = 0.0
 
+# this is important because we need to give control back to user
+TAG_IN_VIEW = False
+
+# quick helper function
 def distance(a, b):
 	inner = (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1])
 	return math.sqrt(inner)
 
+####################################################################
+# update_state()
+#	- update the pitch and roll in degrees based on the FC data
+####################################################################
 def update_state():
 	global roll, pitch
 	
@@ -51,12 +75,47 @@ def update_state():
 			pitch = msg.to_dict()['pitch']*180/3.1415
 			print(msg.to_dict())
 
+####################################################################
+# send_pid_velocities()
+#	- send the global velocity to the pixhawk
+####################################################################
 def send_pid_velocities():
 	global vx, vy, vz
 	
-	# basically just continually write the desired velocity
-		
+	while True:
+		# basically just continually write the desired velocity if tag is seen
+		if TAG_IN_VIEW:
+			# how to change flight mode:
+			mode_id = master.mode_mapping()['GUIDED']
+			master.mav.set_mode_send(0, # target sys
+				mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+				mode_id)
 
+			master.mav.set_position_target_local_ned_send(0, 0, 0,
+				mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+				0b0000111111000111, 0, 0, 0,
+				vx, vy, -vz, 0, 0, 0, 0, 0)
+
+			time.sleep(0.05)
+
+			print("[GUIDED] - sent v:", (vx, vy, -1*vz))
+
+		else:
+			# goto position
+			mode_id = master.mode_mapping()['POSITION']
+			master.mav.set_mode_send(0, # target sys
+				mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+				mode_id)
+
+			time.sleep(1)
+
+			print("[POSITION] - no target found")
+
+####################################################################
+# localize()
+#	- computationally expensive function to localize based on pos
+#	  of apriltag and our pitch and roll
+####################################################################
 def localize():
 	global vx, vy, vz
 	
@@ -64,6 +123,7 @@ def localize():
 	cam = PiCamera()
 	cam.resolution = (640, 480)
 	cam.framerate = 30
+	cam.vflip = True # we mounted it upside down
 	raw = PiRGBArray(cam, size=cam.resolution)
 	time.sleep(0.1)
 	
@@ -92,6 +152,8 @@ def localize():
 		apr_res = detector.detect(gray)
 				
 		if len(apr_res) != 0:
+			TAG_IN_VIEW = True
+
 			r = apr_res[0]
 		
 			(pa, pb, pc, pd) = r.corners
@@ -109,7 +171,8 @@ def localize():
 			dz_pixels = r.center[1] - MIDPOINT[1]
 			dy_pixels = r.center[0] - MIDPOINT[0]
 			
-			dz_angle = -1*(FOV_V * dz_pixels / 480) + pitch
+			# so angle is positive if box is below us (opposite intuition because of NED)
+			dz_angle = FOV_V * dz_pixels / 480 - pitch
 			dy_angle = FOV_H * dy_pixels / 640
 			
 			dz = dx*math.tan(dz_angle * 3.1415/180) - SETPOINT[1]
@@ -132,7 +195,6 @@ def localize():
 			vy = pid_p_term_y + pid_i_term_y + pid_d_term_y
 			vz = pid_p_term_z + pid_i_term_z + pid_d_term_z
 			
-		
 			# annotations
 			cv2.putText(im, "Pitch: "+str(pitch), (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 			cv2.putText(im, "Roll: "+str(roll), (15, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
@@ -147,9 +209,9 @@ def localize():
 			cv2.line(im, pc, pd, (0, 255, 0), 2)
 			cv2.line(im, pd, pa, (0, 255, 0), 2)
 			cv2.circle(im, (int(r.center[0]), int(r.center[1])), 5, (0, 0, 255), -1)
-		
-		
-		
+		else:
+			TAG_IN_VIEW = False
+
 		# this is debugging - show image
 		cv2.imshow("frame", im)
 		key = cv2.waitKey(1) & 0xff
@@ -161,6 +223,10 @@ def localize():
 		if key == ord("q"):
 			sys.exit(0)
 
+####################################################################
+# __main__()
+#	- start all our threads
+####################################################################
 if __name__ == "__main__":
 	mav = threading.Thread(target=update_state)
 	mav.start()
